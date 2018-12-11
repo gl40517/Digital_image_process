@@ -4,8 +4,8 @@ from matplotlib import pyplot as plt
 from numpy.linalg import norm
 import keras
 
-DEFAUTH_CUT_THRESH = eval(input('DEFAUTH_CUT_THRESH='))
-DEFAUTH_ANGLE = eval(input('DEFAUTH_ANGLE='))
+DEFAUTH_CUT_THRESH = 150
+DEFAUTH_ANGLE = 0
 DEFAULT_GAUSSIANBLUR_SIZE = 5
 SOBEL_SCALE = 1
 SOBEL_DELTA = 0
@@ -16,7 +16,7 @@ DEFAULT_MORPH_SIZE_WIDTH = 25
 DEFAULT_MORPH_SIZE_HEIGHT = 3
 DEFAULT_ERROR = 0.8
 DEFAULT_ASPECT = 3.75
-DEFAULT_LETTER_THRESHOLD = 0.06
+DEFAULT_LETTER_THRESHOLD = 0.07
 PROVINCES = ("京" ,"闽" ,"粤" ,"苏" ,"沪" ,"浙")
 LETTERS_DIGITS = (
 "A", "B", "C", "D", "E", "F", "G", "H", "J", "K", "L", "M", "N", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z",
@@ -25,50 +25,10 @@ NUMBERS_DIGITS = (
 "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "A", "B", "C", "D", "E", "F", "G", "H", "J", "K", "L", "M", "N", "P",
 "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z")
 
-class StatModel(object):
-    def load(self, fn):
-        self.model = self.model.load(fn)
-    def save(self, fn):
-        self.model.save(fn)
-
-class SVM(StatModel):
-    def __init__(self, C = 1, gamma = 0.5):
-        self.model = cv2.ml.SVM_create()
-        self.model.setGamma(gamma)
-        self.model.setC(C)
-        self.model.setKernel(cv2.ml.SVM_RBF)
-        self.model.setType(cv2.ml.SVM_C_SVC)
-
-    def train(self, samples, responses):
-        self.model.train(samples, cv2.ml.ROW_SAMPLE, responses)
-#字符识别
-    def predict(self, samples):
-        r = self.model.predict(samples)
-        return r[1].ravel()
-
-def preprocess_hog(digits):
-    samples = []
-    for img in digits:
-        gx = cv2.Sobel(img, cv2.CV_32F, 1, 0)
-        gy = cv2.Sobel(img, cv2.CV_32F, 0, 1)
-        mag, ang = cv2.cartToPolar(gx, gy)
-        bin_n = 16
-        bin = np.int32(bin_n * ang / (2 * np.pi))
-        bin_cells = bin[:10, :10], bin[10:, :10], bin[:10, 10:], bin[10:, 10:]
-        mag_cells = mag[:10, :10], mag[10:, :10], mag[:10, 10:], mag[10:, 10:]
-        hists = [np.bincount(b.ravel(), m.ravel(), bin_n) for b, m in zip(bin_cells, mag_cells)]
-        hist = np.hstack(hists)
-
-        # transform to Hellinger kernel
-        eps = 1e-7
-        hist /= hist.sum() + eps
-        hist = np.sqrt(hist)
-        hist /= norm(hist) + eps
-
-        samples.append(hist)
-    return np.float32(samples)
 
 def rotateImage(img_roi):
+    #----------- use Hough to auto-rotate the image#--------------------------------------
+
     #img_roi_gray = cv2.cvtColor(img_roi, cv2.COLOR_BGR2GRAY)
     #img_roi_canny = cv2.Canny(img_roi_gray, threshold1=200, threshold2=400)
     #lines = cv2.HoughLinesP(img_roi_canny,1,np.pi/180,20,minLineLength=20,maxLineGap=5)
@@ -83,6 +43,9 @@ def rotateImage(img_roi):
     #if line_down > line_up:
         #tan = (line_down - line_up)/(line_right-line_left)
         #angle = 90 - (math.atan(tan) * 180 / math.pi)
+
+    # ----------- use input angle to auto-rotate the image#--------------------------------------
+
     center = (img_roi.shape[1]//2, img_roi.shape[0]//2)
     rot = cv2.getRotationMatrix2D(center=center, angle=DEFAUTH_ANGLE, scale=1.0)
     img_roi_rotated = cv2.warpAffine(img_roi, rot, (img_roi.shape[1], img_roi.shape[0]))
@@ -117,6 +80,17 @@ def verifySizes(mr, img_width):
     else:
         return True
 
+def cut(percentage, thresh):
+    left = []
+    right = []
+    for i in range(len(percentage)):
+        if i == 0:
+            continue
+        if percentage[i-1] < thresh < percentage[i]:
+            left.append(i)
+        if percentage[i] < thresh < percentage[i-1]:
+            right.append(i)
+    return left,right
 
 img = cv2.imread('LPR.jpg')
 img_blur = cv2.GaussianBlur(src=img,
@@ -184,33 +158,28 @@ for i in range(len(mask_percentage_vertical)):
     if mask_percentage_vertical[len(mask_percentage_vertical)-i-1] > 0.1:
         LPR_right = len(mask_percentage_vertical)-i
         break
+
 img_roi = img_roi[:,LPR_left-2 : LPR_right+2]
 img_roi = cv2.cvtColor(img_roi, cv2.COLOR_BGR2GRAY)
-
 MAX = img_roi.max()
 MIN = img_roi.min()
 img_linear_gray = np.uint8(255 / (MAX - MIN) * img_roi - 255 * MIN / (MAX - MIN))
+DEFAUTH_CUT_THRESH = eval(input('DEFAUTH_CUT_THRESH='))
 ret, img_roi_threadhold = cv2.threshold(img_linear_gray, DEFAUTH_CUT_THRESH, 255, cv2.THRESH_BINARY)
-#img_roi_threadhold = cv2.dilate(img_roi_threadhold, kernel=(2,2))
+
+plt.figure(1)
+plt.imshow(img_roi_threadhold, 'gray')
+plt.show()
+
+DEFAUTH_ANGLE = eval(input('DEFAUTH_ANGLE='))
 img_roi_threadhold = rotateImage(img_roi_threadhold)
 
-
 percentage_vertical = (np.sum(img_roi_threadhold,axis=0)/255) / img_roi_threadhold.shape[0]
-def cut(percentage, thresh):
-    left = []
-    right = []
-    for i in range(len(percentage)):
-        if i == 0:
-            continue
-        if percentage[i-1] < thresh < percentage[i]:
-            left.append(i)
-        if percentage[i] < thresh < percentage[i-1]:
-            right.append(i)
-    return left,right
-roi_left,roi_right = cut(percentage_vertical,0.07)
-#print(roi_left,roi_right)
+roi_left,roi_right = cut(percentage_vertical, DEFAULT_LETTER_THRESHOLD)
+
 final_result = []
 number = min(len(roi_left),len(roi_right))
+
 for i in range(number):
     isOne = True
     if roi_right[i] - roi_left[i] > (roi_right[len(roi_right)-1] - roi_left[0]) / 11:
@@ -222,11 +191,12 @@ for i in range(number):
         if isOne:
             final_result.append(img_roi_threadhold[:, int(roi_left[i]):int(roi_right[i])])
 
-#model = SVM(C=1, gamma=0.5)
-#modelChinese = SVM(C=1, gamma=0.5)
-#model.load("svm.dat")
-#modelChinese.load("svmchinese.dat")
-#SZ = 20
+plt.figure(2)
+for i in range(len(final_result)):
+    plt.subplot(3,3,i+1)
+    plt.imshow(final_result[i],'gray')
+plt.show()
+
 model_Chinese = keras.models.load_model('.\chinese_character_model.h5')
 model_letter = keras.models.load_model('.\letter_model.h5')
 model_number = keras.models.load_model('./number_model.h5')
@@ -260,36 +230,6 @@ for i in range(len(final_result)):
         predict_result.append(LETTERS_DIGITS[proba_letter[0]])
     else:
         proba_number = model_number.predict_classes(input_images, verbose=0)
-        print(proba_number[0])
         predict_result.append(NUMBERS_DIGITS[proba_number[0]])
-'''
-for i in range(len(final_result)):
-    part_card = final_result[i][int(final_result[i].shape[0]/10) : int(final_result[i].shape[0]*4.3/5),:]
-    part_card_old = part_card
-    w = abs(part_card.shape[1] - SZ) // 2
 
-    part_card = cv2.copyMakeBorder(part_card, 0, 0, w, w, cv2.BORDER_CONSTANT, value=[0, 0, 0])
-    #plt.imshow(part_card,'gray')
-    #plt.show()
-    part_card = cv2.resize(part_card, (SZ, SZ), interpolation=cv2.INTER_AREA)
-    part_card = preprocess_hog([part_card])
-    if i == 0:
-        resp = modelChinese.predict(part_card)
-        charactor = provinces[int(resp[0]) - PROVINCE_START]
-    else:
-        resp = model.predict(part_card)
-        charactor = chr(resp[0])
-
-    predict_result.append(charactor)
-'''
 print(predict_result)
-
-#plt.figure(1)
-#plt.imshow(img_roi_RGB)
-#plt.figure(2)
-#plt.imshow(img_roi_threadhold,'gray')
-plt.figure(3)
-for i in range(len(final_result)):
-    plt.subplot(3,3,i+1)
-    plt.imshow(final_result[i],'gray')
-plt.show()
